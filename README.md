@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Baileys API
 
 <a href="https://fazer.ai?utm_source=github&utm_medium=en&utm_campaign=baileys-api"><img alt="fazer.ai logo" src="https://framerusercontent.com/images/HqY9djLTzyutSKnuLLqBr92KbM.png?scale-down-to=256" height="75"/></a>
@@ -139,3 +140,6 @@ The `docker-compose.coolify.yml` can be adapted for other Docker environments. Y
 
 - [ ] Add support for more Baileys features
 - [ ] Add unit testing
+=======
+# Baileys-msaku
+>>>>>>> e7578c0c50375d5ed355975756e8718c8326ffe6
