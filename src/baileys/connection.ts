@@ -43,11 +43,6 @@ import redis from "@/lib/redis";
 const CONNECTION_REPLACED_LOOP_WINDOW_MS = 30_000;
 const CONNECTION_REPLACED_LOOP_THRESHOLD = 5;
 const CONNECTION_REPLACED_BACKOFF_MS = 30_000;
-// NOTE: The first few reconnects stay immediate (a single blip usually
-// clears on the next attempt). From this many attempts on, reconnects get
-// an exponential backoff so a longer outage can't hammer WhatsApp or burn
-// through the reconnect budget in seconds.
-const RECONNECT_BACKOFF_START = 4;
 
 export class BaileysNotConnectedError extends Error {
   constructor() {
@@ -129,7 +124,6 @@ export class BaileysConnection {
   private clearOnlinePresenceTimeout: ReturnType<typeof setTimeout> | null =
     null;
   private reconnectCount = 0;
-  private reconnectTimestamps: number[] = [];
   private connectionReplacedTimestamps: number[] = [];
   private groupsEnabled: boolean;
   private autoPresenceSubscribe: boolean;
@@ -341,7 +335,6 @@ export class BaileysConnection {
     this.clearAuthState = null;
     this.socket = null;
     this.reconnectCount = 0;
-    this.reconnectTimestamps = [];
     this.connectionReplacedTimestamps = [];
     this.onConnectionClose?.();
   }
@@ -689,7 +682,6 @@ export class BaileysConnection {
         // NOTE: We don't call `this.close()` here because we want to keep the auth state.
         this.socket = null;
 
-        let delayMs = 0;
         if (statusCode === DisconnectReason.connectionReplaced) {
           const recentCount = this.trackConnectionReplaced();
           if (recentCount >= CONNECTION_REPLACED_LOOP_THRESHOLD) {
@@ -700,24 +692,8 @@ export class BaileysConnection {
               CONNECTION_REPLACED_LOOP_WINDOW_MS,
               CONNECTION_REPLACED_BACKOFF_MS,
             );
-            delayMs = CONNECTION_REPLACED_BACKOFF_MS;
+            await asyncSleep(CONNECTION_REPLACED_BACKOFF_MS);
           }
-        }
-        // NOTE: When reconnect attempts pile up inside a short window (a
-        // network blip or an outage), back off exponentially (1s, 2s, 4s,
-        // ... capped at 30s) instead of hammering WhatsApp with immediate
-        // retries. Spread-out single disconnects reconnect immediately.
-        if (delayMs === 0) {
-          const recentReconnects = this.trackReconnect();
-          if (recentReconnects > RECONNECT_BACKOFF_START) {
-            delayMs = Math.min(
-              30_000,
-              1000 * 2 ** Math.min(recentReconnects - 1 - RECONNECT_BACKOFF_START, 5),
-            );
-          }
-        }
-        if (delayMs > 0) {
-          await asyncSleep(delayMs);
         }
 
         this.connect();
@@ -901,29 +877,18 @@ export class BaileysConnection {
 
   private async handleReconnecting() {
     this.reconnectCount += 1;
-    // NOTE: We intentionally never clear the auth state here. Clearing it
-    // forces the user to re-scan the QR code after a rough network patch,
-    // which looked like a "random disconnect". With the exponential backoff
-    // applied before each reconnect, retrying indefinitely is safe.
-    if (this.reconnectCount > 50) {
+    if (this.reconnectCount > 10) {
       logger.warn(
-        "[%s] [handleReconnecting] Reconnect count exceeded 50, continuing to retry with backoff",
+        "[%s] [handleReconnecting] Reconnect count exceeded 10, resetting connection",
         this.phoneNumber,
       );
+      await this.close();
+      return;
     }
     this.sendToWebhook({
       event: "connection.update",
       data: { connection: "reconnecting" as WAConnectionState },
     });
-  }
-
-  private trackReconnect(): number {
-    const now = Date.now();
-    this.reconnectTimestamps = this.reconnectTimestamps.filter(
-      (ts) => now - ts <= CONNECTION_REPLACED_LOOP_WINDOW_MS,
-    );
-    this.reconnectTimestamps.push(now);
-    return this.reconnectTimestamps.length;
   }
 
   private trackConnectionReplaced(): number {
