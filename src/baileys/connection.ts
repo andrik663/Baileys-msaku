@@ -877,13 +877,15 @@ export class BaileysConnection {
 
   private async handleReconnecting() {
     this.reconnectCount += 1;
+    // NOTE: Never call this.close() (which clears Redis auth state) on
+    // transient reconnects — clearing auth state forces a QR re-scan after a
+    // network blip. Keep retrying with backoff until explicitly logged out.
     if (this.reconnectCount > 10) {
       logger.warn(
-        "[%s] [handleReconnecting] Reconnect count exceeded 10, resetting connection",
+        "[%s] [handleReconnecting] Reconnect count exceeded 10 (%d), continuing with backoff",
         this.phoneNumber,
+        this.reconnectCount,
       );
-      await this.close();
-      return;
     }
     this.sendToWebhook({
       event: "connection.update",
