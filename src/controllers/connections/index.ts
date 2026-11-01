@@ -117,6 +117,17 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .get("", () => ({ status: "ok" }))
+  .post(
+    "/:phoneNumber/presence",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const type = (body as { type?: "available" | "unavailable" | "composing" | "recording" | "paused" })?.type || "available";
+      const toJid = (body as { toJid?: string })?.toJid;
+      await baileys.sendPresenceUpdate(phoneNumber, { type, toJid });
+      return { status: "ok" };
+    },
+  )
   .patch(
     "/:phoneNumber/presence",
     async ({ params, body }) => {

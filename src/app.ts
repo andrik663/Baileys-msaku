@@ -63,6 +63,8 @@ const app = new Elysia()
     }
   })
   .get("/health", () => "ok")
+  .get("/", () => ({ status: "ok", service: "@fazer-ai/baileys-api" }))
+  .head("/", () => "")
   .use(
     swagger({
       documentation: {
