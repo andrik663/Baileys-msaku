@@ -1,6 +1,7 @@
 import cors from "@elysiajs/cors";
 import swagger from "@elysiajs/swagger";
 import Elysia from "elysia";
+import { BaileysNotConnectedError } from "@/baileys/connection";
 import config from "@/config";
 import adminController from "@/controllers/admin";
 import connectionsController from "@/controllers/connections";
@@ -32,17 +33,36 @@ const app = new Elysia()
   })
   .onError(({ path, error, code }) => {
     logger.error("%s\n%s", path, errorToString(error));
+    if (error instanceof BaileysNotConnectedError) {
+      return new Response(
+        JSON.stringify({
+          error: "NotConnected",
+          message: error.message,
+        }),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
     switch (code) {
       case "INTERNAL_SERVER_ERROR": {
-        const message =
-          config.env === "development"
-            ? errorToString(error)
-            : "Something went wrong";
-        return new Response(message, { status: 500 });
+        const message = errorToString(error);
+        return new Response(
+          JSON.stringify({
+            error: "InternalServerError",
+            message,
+          }),
+          {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
       }
       default:
     }
   })
+  .get("/health", () => "ok")
   .use(
     swagger({
       documentation: {

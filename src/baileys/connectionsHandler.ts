@@ -84,8 +84,10 @@ export class BaileysConnectionsHandler {
     if (this.connections[phoneNumber]) {
       this.connections[phoneNumber].updateOptions(options);
       try {
-        // NOTE: This triggers a `connection.update` event.
-        await this.connections[phoneNumber].sendPresenceUpdate("available");
+        await this.connections[phoneNumber].reEmitCurrentState();
+        if (this.connections[phoneNumber].isConnectedOpen()) {
+          await this.connections[phoneNumber].sendPresenceUpdate("available");
+        }
         return;
       } catch (error) {
         if (!(error instanceof BaileysNotConnectedError)) {
@@ -149,7 +151,7 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).presenceSubscribe(jids);
   }
 
-  sendMessage(
+  async sendMessage(
     phoneNumber: string,
     {
       jid,
@@ -161,6 +163,23 @@ export class BaileysConnectionsHandler {
       quoted?: WAMessage;
     },
   ) {
+    if (!this.connections[phoneNumber]) {
+      const metadata =
+        await getRedisAuthMetadata<
+          Omit<BaileysConnectionOptions, "phoneNumber" | "onConnectionClose">
+        >(phoneNumber);
+      if (metadata?.webhookUrl) {
+        const connection = this.createConnection(phoneNumber, {
+          ...metadata,
+          isReconnect: true,
+          onConnectionClose: () => {
+            delete this.connections[phoneNumber];
+          },
+        });
+        this.connections[phoneNumber] = connection;
+        await connection.connect();
+      }
+    }
     return this.getConnection(phoneNumber).sendMessage(jid, messageContent, {
       quoted,
     });

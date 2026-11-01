@@ -125,6 +125,10 @@ export class BaileysConnection {
     null;
   private reconnectCount = 0;
   private connectionReplacedTimestamps: number[] = [];
+  private isOpen = false;
+  private lastQr: string | null = null;
+  private lastQrDataUrl: string | null = null;
+  private openWaiters: Array<() => void> = [];
   private groupsEnabled: boolean;
   private autoPresenceSubscribe: boolean;
   private _apiKeyHash: string | null;
@@ -334,9 +338,60 @@ export class BaileysConnection {
     await this.clearAuthState?.();
     this.clearAuthState = null;
     this.socket = null;
+    this.isOpen = false;
+    this.lastQr = null;
+    this.lastQrDataUrl = null;
     this.reconnectCount = 0;
     this.connectionReplacedTimestamps = [];
     this.onConnectionClose?.();
+  }
+
+  isConnectedOpen(): boolean {
+    return this.isOpen && Boolean(this.socket?.authState?.creds?.me);
+  }
+
+  async waitForOpen(timeoutMs = 8000): Promise<boolean> {
+    if (this.isOpen && this.socket) return true;
+    if (!this.socket) {
+      await this.connect();
+    }
+    if (this.isOpen && this.socket) return true;
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        const idx = this.openWaiters.indexOf(onOpen);
+        if (idx !== -1) this.openWaiters.splice(idx, 1);
+        resolve(this.isOpen);
+      }, timeoutMs);
+      const onOpen = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      this.openWaiters.push(onOpen);
+    });
+  }
+
+  async reEmitCurrentState(): Promise<void> {
+    if (this.isOpen && this.socket?.authState?.creds?.me) {
+      this.sendToWebhook({
+        event: "connection.update",
+        data: { connection: "open", isOnline: true },
+      });
+      return;
+    }
+    if (this.lastQr && this.lastQrDataUrl && this.socket) {
+      this.sendToWebhook({
+        event: "connection.update",
+        data: {
+          connection: "connecting",
+          qr: this.lastQr,
+          qrDataUrl: this.lastQrDataUrl,
+        } as Partial<ConnectionState>,
+      });
+      return;
+    }
+    if (!this.socket) {
+      await this.connect();
+    }
   }
 
   async logout() {
@@ -357,6 +412,9 @@ export class BaileysConnection {
     messageContent: AnyMessageContent,
     options?: { quoted?: WAMessage },
   ) {
+    if (!this.isOpen || !this.socket) {
+      await this.waitForOpen(8000);
+    }
     this.safeSocket();
     this.autoSubscribePresence(jid);
 
@@ -386,10 +444,30 @@ export class BaileysConnection {
       );
     }
 
-    return this.safeSocket().sendMessage(jid, messageContent, {
-      waveformProxy,
-      quoted: options?.quoted,
-    });
+    try {
+      return await this.safeSocket().sendMessage(jid, messageContent, {
+        waveformProxy,
+        quoted: options?.quoted,
+      });
+    } catch (err) {
+      const msg = errorToString(err as Error);
+      if (/Connection Closed|Timed Out|not open/i.test(msg)) {
+        logger.warn(
+          "[%s] [sendMessage] Socket closed during send (%s), reconnecting and retrying once...",
+          this.phoneNumber,
+          msg,
+        );
+        this.isOpen = false;
+        this.socket = null;
+        await this.connect();
+        await this.waitForOpen(8000);
+        return await this.safeSocket().sendMessage(jid, messageContent, {
+          waveformProxy,
+          quoted: options?.quoted,
+        });
+      }
+      throw err;
+    }
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {
@@ -680,6 +758,7 @@ export class BaileysConnection {
         );
         await this.handleReconnecting();
         // NOTE: We don't call `this.close()` here because we want to keep the auth state.
+        this.isOpen = false;
         this.socket = null;
 
         if (statusCode === DisconnectReason.connectionReplaced) {
@@ -714,9 +793,13 @@ export class BaileysConnection {
     }
 
     if (qr) {
+      const qrDataUrl = await toDataURL(qr);
+      this.isOpen = false;
+      this.lastQr = qr;
+      this.lastQrDataUrl = qrDataUrl;
       Object.assign(data, {
         connection: "connecting",
-        qrDataUrl: await toDataURL(qr),
+        qrDataUrl,
       });
     }
 
@@ -725,8 +808,15 @@ export class BaileysConnection {
     }
 
     if (data.connection === "open") {
+      this.isOpen = true;
+      this.lastQr = null;
+      this.lastQrDataUrl = null;
       this.reconnectCount = 0;
       this.startGroupActivityFlush();
+      const waiters = this.openWaiters.splice(0);
+      for (const resolve of waiters) {
+        resolve();
+      }
     }
 
     this.sendToWebhook({
